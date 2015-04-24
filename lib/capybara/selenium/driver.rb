@@ -1,16 +1,32 @@
 require "uri"
 
 class Capybara::Selenium::Driver < Capybara::Driver::Base
+  @@proxy_server = nil
   DEFAULT_OPTIONS = {
     :browser => :firefox
   }
   SPECIAL_OPTIONS = [:browser]
 
-  attr_reader :app, :options
+  attr_reader :app, :options, :proxy
 
   def browser
     unless @browser
-      @browser = Selenium::WebDriver.for(options[:browser], options.reject { |key,val| SPECIAL_OPTIONS.include?(key) })
+      @proxy = @@proxy_server.create_proxy
+      case options[:browser]
+      when :firefox
+        # options[:profile] ||= Selenium::WebDriver::Firefox::Profile.new
+        # #can't access the proxy settings in the profile directly - annoying
+        # #only add proxy settings if the user hasn't specified their own
+        # if options[:profile].instance_variable_get(:@additional_prefs).keys.none? { |k| k =~ /^network\.proxy\./}
+        #   options[:profile].proxy = @proxy.selenium_proxy
+        # end
+        options[:proxy] ||=@proxy.selenium_proxy
+      when :chrome
+        options[:proxy] ||= @proxy.selenium_proxy
+      end
+
+      @browser = Selenium::WebDriver.for(options[:browser],
+        options.reject { |key,val| SPECIAL_OPTIONS.include?(key) } )
 
       main = Process.pid
       at_exit do
@@ -26,12 +42,20 @@ class Capybara::Selenium::Driver < Capybara::Driver::Base
   def initialize(app, options={})
     begin
       require 'selenium-webdriver'
+      require 'browsermob-proxy'
     rescue LoadError => e
       if e.message =~ /selenium-webdriver/
         raise LoadError, "Capybara's selenium driver is unable to load `selenium-webdriver`, please install the gem and add `gem 'selenium-webdriver'` to your Gemfile if you are using bundler."
+      elsif e.message =~/browsermob-proxy/
+        raise LoadError, "Capybara's selenium driver is unable to load 'browsermob-proxy', please install the gem and add `gem 'browsermob-proxy'` to your Gemfile if you are using bundler."
       else
         raise e
       end
+    end
+
+    if @@proxy_server.nil?
+      @@proxy_server = BrowserMob::Proxy::Server.new("#{ENV['BROWSERMOB_PROXY_HOME']}/bin/browsermob-proxy")
+      @@proxy_server.start
     end
 
     @app = app
@@ -233,7 +257,9 @@ class Capybara::Selenium::Driver < Capybara::Driver::Base
   rescue Errno::ECONNREFUSED
     # Browser must have already gone
   ensure
+    @proxy.close if @proxy
     @browser = nil
+    @proxy = nil
   end
 
   def invalid_element_errors
